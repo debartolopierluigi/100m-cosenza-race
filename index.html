@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>100m Cosenza Race</title>
+  <style>
+    html,body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #hud{
+      position:fixed; left:12px; top:12px; z-index:10; color:#fff;
+      background: rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.12);
+      border-radius:14px; padding:12px 12px 10px 12px; backdrop-filter: blur(8px);
+      min-width: 240px;
+    }
+    #title{ font-weight:700; font-size:14px; opacity:.95; margin-bottom:6px; }
+    #line{ font-size:12px; opacity:.9; margin:2px 0; }
+    #count{ font-size:18px; font-weight:800; margin:8px 0 6px; }
+    #time{ font-variant-numeric: tabular-nums; font-size:22px; font-weight:800; }
+    .row{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:8px; }
+    .bar{ width: 150px; height: 10px; background:#2b2b2b; border-radius: 999px; overflow:hidden; border:1px solid rgba(255,255,255,0.12); }
+    .bar > div{ height:100%; width:100%; background: linear-gradient(90deg, #39ff86, #b6ff39); }
+    #help{
+      position:fixed; right:12px; top:12px; z-index:10; color:#fff;
+      background: rgba(0,0,0,0.40); border:1px solid rgba(255,255,255,0.12);
+      border-radius:14px; padding:10px 12px; backdrop-filter: blur(8px);
+      max-width: 320px; font-size:12px; line-height:1.35;
+    }
+    #help b{ font-weight:800; }
+    #overlay{
+      position:fixed; inset:0; display:none; place-items:center; z-index:20;
+      background: rgba(0,0,0,0.60);
+    }
+    #panel{
+      width:min(560px, 92vw);
+      background: rgba(10,10,10,0.85);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 18px;
+      padding: 16px;
+      color:#fff;
+      box-shadow: 0 20px 80px rgba(0,0,0,.55);
+    }
+    #panel h2{ margin: 0 0 6px; font-size:18px; }
+    #panel p{ margin: 0 0 10px; opacity:.9; font-size:13px; }
+    table{ width:100%; border-collapse: collapse; font-size:13px; }
+    th,td{ padding:8px 8px; border-bottom:1px solid rgba(255,255,255,0.12); text-align:left; }
+    th{ opacity:.85; font-weight:700; }
+    #btns{ display:flex; gap:10px; justify-content:flex-end; margin-top:12px; }
+    button{
+      border:1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      color:#fff; padding:10px 12px; border-radius:12px; cursor:pointer;
+      font-weight:700;
+    }
+    button:hover{ background: rgba(255,255,255,0.12); }
+    #badge{
+      margin-top:8px; font-size:12px; opacity:.85;
+    }
+    canvas{ display:block; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div id="title">🏁 100m Cosenza Race</div>
+    <div id="line">Runner giocatore: <b>Pierluigi</b> • Ambientazione: Cosenza (ispirata al Ponte di Calatrava)</div>
+    <div id="count">Premi <b>SPACE</b> per partire</div>
+    <div class="row">
+      <div>
+        <div style="font-size:12px; opacity:.9;">Tempo</div>
+        <div id="time">0.000</div>
+      </div>
+      <div>
+        <div style="font-size:12px; opacity:.9; margin-bottom:6px;">Stamina (SHIFT = sprint)</div>
+        <div class="bar"><div id="stamFill"></div></div>
+      </div>
+    </div>
+    <div id="badge">Best time: <b id="best">—</b></div>
+  </div>
+
+  <div id="help">
+    <b>Controlli</b><br/>
+    SPACE: start • SHIFT: sprint • A/D o ←/→: micro corsia • C: camera • R: restart<br/>
+    <span style="opacity:.85;">(Sprint consuma stamina. Rilascia SHIFT per recuperare.)</span>
+  </div>
+
+  <div id="overlay">
+    <div id="panel">
+      <h2>Risultato gara</h2>
+      <p id="finalText"></p>
+      <table>
+        <thead><tr><th>Pos</th><th>Nome</th><th>Tempo</th></tr></thead>
+        <tbody id="board"></tbody>
+      </table>
+      <div id="btns">
+        <button id="again">Gioca di nuovo (R)</button>
+        <button id="close">Chiudi</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Three.js via CDN (nessun npm, nessun Node) -->
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+    // ---------- UTIL ----------
+    const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
+    const fmt = (t)=>t.toFixed(3);
+
+    // ---------- UI ----------
+    const elCount = document.getElementById("count");
+    const elTime  = document.getElementById("time");
+    const elFill  = document.getElementById("stamFill");
+    const elBest  = document.getElementById("best");
+    const overlay = document.getElementById("overlay");
+    const board   = document.getElementById("board");
+    const finalText = document.getElementById("finalText");
+    const btnAgain = document.getElementById("again");
+    const btnClose = document.getElementById("close");
+
+    const BEST_KEY = "cosenza_100m_best_time";
+    const bestStored = localStorage.getItem(BEST_KEY);
+    if(bestStored) elBest.textContent = fmt(parseFloat(bestStored)) + " s";
+
+    // ---------- SCENA ----------
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x9fb3c8, 30, 220);
+
+    const camera = new THREE.PerspectiveCamera(65, innerWidth/innerHeight, 0.1, 600);
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Luci
+    const sun = new THREE.DirectionalLight(0xffffff, 1.05);
+    sun.position.set(80, 120, 50);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048,2048);
+    scene.add(sun);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+
+    // Terreno
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(80, 320),
+      new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 1, metalness: 0 })
+    );
+    ground.rotation.x = -Math.PI/2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Pista 100m (Z negativo = avanti)
+    const START_Z = 10;
+    const FINISH_Z = -90; // ~100m "scalati"
+    const lanes = [-2, 0, 2];
+
+    // Strisce corsie
+    const lineMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
+    for(let i=0;i<4;i++){
+      const x = -3 + i*2;
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 110), lineMat);
+      stripe.position.set(x, 0.011, (START_Z+FINISH_Z)/2);
+      stripe.receiveShadow = true;
+      scene.add(stripe);
+    }
+
+    // Linea partenza/arrivo
+    function addLine(z, color){
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(7, 0.03, 0.25),
+        new THREE.MeshStandardMaterial({ color, roughness: 1 })
+      );
+      m.position.set(0, 0.02, z);
+      m.receiveShadow = true;
+      scene.add(m);
+    }
+    addLine(START_Z, 0x00e5ff);
+    addLine(FINISH_Z, 0xfff200);
+
+    // Transenne (semplici)
+    const fenceMat = new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.8, metalness: 0.2 });
+    for(let i=0;i<26;i++){
+      const z = START_Z - i*4.2;
+      const f1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.6, 3.4), fenceMat);
+      const f2 = f1.clone();
+      f1.position.set(-5.2, 0.3, z);
+      f2.position.set( 5.2, 0.3, z);
+      f1.castShadow = f2.castShadow = true;
+      scene.add(f1, f2);
+    }
+
+    // "Ponte" ispirato (non copia fedele)
+    const bridgeGroup = new THREE.Group();
+    const archMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.6, metalness: 0.05 });
+    const deckMat = new THREE.MeshStandardMaterial({ color: 0xdcdcdc, roughness: 0.85 });
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(28, 1.2, 4), deckMat);
+    deck.position.set(18, 6.5, -55);
+    deck.rotation.y = -0.35;
+    deck.castShadow = true;
+    bridgeGroup.add(deck);
+    for(let i=0;i<6;i++){
+      const p = new THREE.Mesh(new THREE.BoxGeometry(0.35, 10, 0.35), archMat);
+      p.position.set(8 + i*2.2, 6, -55 + i*0.4);
+      p.rotation.y = -0.35;
+      p.castShadow = true;
+      bridgeGroup.add(p);
+    }
+    const arc = new THREE.Mesh(new THREE.TorusGeometry(9, 0.25, 10, 40, Math.PI), archMat);
+    arc.position.set(14, 10, -56);
+    arc.rotation.z = Math.PI;
+    arc.rotation.y = -0.35;
+    arc.castShadow = true;
+    bridgeGroup.add(arc);
+    scene.add(bridgeGroup);
+
+    // Edifici lontani
+    const bMat1 = new THREE.MeshStandardMaterial({ color: 0x6b7c8f, roughness: 1 });
+    const bMat2 = new THREE.MeshStandardMaterial({ color: 0x5b6878, roughness: 1 });
+    for(let i=0;i<22;i++){
+      const w = 4 + Math.random()*6;
+      const h = 6 + Math.random()*18;
+      const d = 4 + Math.random()*6;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), Math.random()>0.5?bMat1:bMat2);
+      m.position.set((Math.random()>0.5?1:-1)*(12+Math.random()*18), h/2, -30 - Math.random()*160);
+      m.castShadow = true;
+      scene.add(m);
+    }
+
+    // ---------- PERSONAGGI ----------
+    function makeRunner(color){
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.65, 1.3, 0.38), new THREE.MeshStandardMaterial({ color, roughness: 0.8 }));
+      body.position.y = 1.2;
+      body.castShadow = true;
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 18, 18), new THREE.MeshStandardMaterial({ color: 0xffd2b8, roughness: 0.9 }));
+      head.position.y = 2.05;
+      head.castShadow = true;
+      const leg1 = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.75, 0.18), new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1 }));
+      const leg2 = leg1.clone();
+      leg1.position.set(-0.17, 0.55, 0);
+      leg2.position.set( 0.17, 0.55, 0);
+      leg1.castShadow = leg2.castShadow = true;
+      g.add(body, head, leg1, leg2);
+      g.userData.leg1 = leg1;
+      g.userData.leg2 = leg2;
+      return g;
+    }
+
+    function makeDog(color, eyeBlue=false){
+      const g = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.55), mat);
+      body.position.y = 0.35;
+      body.castShadow = true;
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.28, 0.28), mat);
+      head.position.set(0.58, 0.45, 0);
+      head.castShadow = true;
+
+      // occhi
+      const eyeMat = new THREE.MeshStandardMaterial({ color: eyeBlue ? 0x66ccff : 0x111111, roughness: 0.2, metalness: 0.1 });
+      const eye1 = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 10), eyeMat);
+      const eye2 = eye1.clone();
+      eye1.position.set(0.75, 0.50, 0.08);
+      eye2.position.set(0.75, 0.50,-0.08);
+      eye1.castShadow = eye2.castShadow = true;
+
+      const legMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 1 });
+      const legs = [];
+      for(let i=0;i<4;i++){
+        const l = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.28, 0.12), legMat);
+        l.position.set(i<2?0.25:-0.25, 0.14, i%2?0.18:-0.18);
+        l.castShadow = true;
+        legs.push(l);
+        g.add(l);
+      }
+
+      g.add(body, head, eye1, eye2);
+      g.userData.legs = legs;
+      return g;
+    }
+
+    const runners = [
+      { name:"Michael",  color:0x2aa3ff, lane:lanes[0], obj: makeRunner(0x2aa3ff), ai:"steady" },
+      { name:"Pierluigi",color:0xff9f2a, lane:lanes[1], obj: makeRunner(0xff9f2a), ai:"player" },
+      { name:"Anthony",  color:0xc052ff, lane:lanes[2], obj: makeRunner(0xc052ff), ai:"fastStart" }
+    ];
+
+    runners.forEach((r,i)=>{
+      r.z = START_Z;
+      r.v = 0;
+      r.finished = false;
+      r.time = null;
+      r.stamina = (r.ai==="player") ? 1 : 1; // solo player mostra barra
+      r.sprinting = false;
+      r.obj.position.set(r.lane, 0, r.z);
+      scene.add(r.obj);
+    });
+
+    const dogs = [
+      { name:"Artemide", obj: makeDog(0x8b6b4f, false), sideX:-6.8 },
+      { name:"Thor",     obj: makeDog(0xb0bec5, true),  sideX: 6.8 }
+    ];
+    dogs.forEach((d,i)=>{
+      d.z = START_Z + 1.8 - i*0.6;
+      d.obj.position.set(d.sideX, 0, d.z);
+      scene.add(d.obj);
+    });
+
+    // ---------- CAMERA ----------
+    let camMode = 0; // 0 follow, 1 side
+    function updateCamera(){
+      const player = runners[1];
+      if(camMode===0){
+        const desired = new THREE.Vector3(player.lane, 5.2, player.z + 12.5);
+        camera.position.lerp(desired, 0.10);
+        camera.lookAt(player.lane, 1.6, player.z - 8);
+      } else {
+        const desired = new THREE.Vector3(10, 4.5, player.z + 2);
+        camera.position.lerp(desired, 0.10);
+        camera.lookAt(0, 1.6, player.z - 18);
+      }
+    }
+    camera.position.set(0, 5, START_Z + 14);
+
+    // ---------- GAME STATE ----------
+    let started = false;
+    let racing = false;
+    let finished = false;
+    let t = 0;
+
+    // countdown
+    let countdown = 0; // 0=idle, 3..1 -> go
+    let countTimer = 0;
+
+    // input
+    const keys = new Set();
+    addEventListener("keydown", (e)=>{
+      keys.add(e.code);
+
+      if(e.code==="KeyC") camMode = (camMode+1)%2;
+      if(e.code==="KeyR") reset();
+
+      if(e.code==="Space" && !started){
+        started = true;
+        countdown = 3;
+        countTimer = 0;
+        elCount.innerHTML = "Pronti...";
+      }
+    });
+    addEventListener("keyup", (e)=> keys.delete(e.code));
+
+    btnAgain.onclick = ()=>reset();
+    btnClose.onclick = ()=>{ overlay.style.display="none"; };
+
+    function reset(){
+      started = false;
+      racing = false;
+      finished = false;
+      t = 0;
+      countdown = 0;
+      countTimer = 0;
+      overlay.style.display="none";
+      elTime.textContent = "0.000";
+      elCount.innerHTML = 'Premi <b>SPACE</b> per partire';
+
+      runners.forEach((r,i)=>{
+        r.z = START_Z;
+        r.v = 0;
+        r.finished = false;
+        r.time = null;
+        r.sprinting = false;
+        if(r.ai==="player") r.stamina = 1;
+        r.obj.position.set(r.lane, 0, r.z);
+      });
+      dogs.forEach((d,i)=>{
+        d.z = START_Z + 1.8 - i*0.6;
+        d.obj.position.set(d.sideX, 0, d.z);
+      });
+    }
+
+    // AI profili (semplici ma credibili)
+    function aiTargetSpeed(profile, progress01){
+      // progress01: 0 -> start, 1 -> finish
+      if(profile==="steady"){
+        return 9.6 + Math.sin(progress01*Math.PI)*0.3; // costante
+      }
+      if(profile==="fastStart"){
+        // parte forte poi cala un filo
+        return 10.6 - progress01*0.9 + (Math.random()-0.5)*0.08;
+      }
+      // player handled elsewhere
+      return 9.8;
+    }
+
+    // animazioni gambe / zampe
+    function animateRunner(r, speed, dt){
+      const swing = Math.min(1.2, speed/12) * 1.2;
+      const phase = performance.now()*0.015;
+      r.obj.userData.leg1.rotation.x = Math.sin(phase)*swing;
+      r.obj.userData.leg2.rotation.x = Math.sin(phase+Math.PI)*swing;
+      // lieve bounce
+      r.obj.position.y = Math.abs(Math.sin(phase))*0.05;
+    }
+    function animateDog(d, speed){
+      const legs = d.obj.userData.legs;
+      const phase = performance.now()*0.02;
+      const swing = Math.min(1.2, speed/11) * 0.9;
+      legs.forEach((l,idx)=>{
+        l.rotation.x = Math.sin(phase + (idx%2?Math.PI:0))*swing;
+      });
+      d.obj.position.y = 0.02 + Math.abs(Math.sin(phase))*0.02;
+    }
+
+    // ---------- LOOP ----------
+    const clock = new THREE.Clock();
+    function tick(){
+      requestAnimationFrame(tick);
+      const dt = Math.min(0.033, clock.getDelta());
+
+      // countdown
+      if(started && !racing){
+        countTimer += dt;
+        if(countdown>0){
+          // ogni 1s decrementa
+          if(countTimer >= 1){
+            countTimer = 0;
+            countdown--;
+            if(countdown>0){
+              elCount.textContent = String(countdown);
+            } else {
+              elCount.textContent = "VIA!";
+              racing = true;
+              // piccola pausa "VIA!"
+              setTimeout(()=>{ if(!finished) elCount.textContent=""; }, 700);
+            }
+          } else {
+            // prima visualizzazione
+            if(countdown===3 && countTimer<0.1) elCount.textContent="3";
+          }
+        }
+      }
+
+      if(racing && !finished){
+        t += dt;
+        elTime.textContent = fmt(t);
+
+        // Player controls
+        const player = runners[1];
+        const left  = keys.has("KeyA") || keys.has("ArrowLeft");
+        const right = keys.has("KeyD") || keys.has("ArrowRight");
+        if(left)  player.lane = clamp(player.lane - dt*2.5, -2, 2);
+        if(right) player.lane = clamp(player.lane + dt*2.5, -2, 2);
+
+        const sprint = keys.has("ShiftLeft") || keys.has("ShiftRight");
+        player.sprinting = sprint && player.stamina>0.02;
+
+        const baseMax = 10.3; // velocità media
+        const sprintBoost = 1.25;
+
+        // stamina
+        if(player.sprinting){
+          player.stamina -= dt*0.32;
+        } else {
+          player.stamina += dt*0.22;
+        }
+        player.stamina = clamp(player.stamina, 0, 1);
+        elFill.style.width = (player.stamina*100).toFixed(0) + "%";
+
+        // speed smoothing
+        const target = baseMax * (player.sprinting ? sprintBoost : 1.0);
+        player.v = THREE.MathUtils.lerp(player.v, target, 0.08);
+
+        // move forward (z decreasing)
+        player.z -= player.v * dt;
+        player.obj.position.z = player.z;
+        player.obj.position.x = player.lane;
+
+        animateRunner(player, player.v, dt);
+
+        // AI runners
+        for(const r of runners){
+          if(r.ai==="player") continue;
+          if(r.finished) continue;
+
+          const progress01 = clamp((START_Z - r.z) / (START_Z - FINISH_Z), 0, 1);
+          const ts = aiTargetSpeed(r.ai, progress01);
+
+          // piccole variazioni + "sprint finale" per Michael
+          let extra = 0;
+          if(r.ai==="steady" && progress01>0.75) extra = 0.9; // sprint finale
+          const targetV = ts + extra;
+
+          r.v = THREE.MathUtils.lerp(r.v, targetV, 0.06);
+          r.z -= r.v * dt;
+          r.obj.position.z = r.z;
+          r.obj.position.x = r.lane;
+
+          animateRunner(r, r.v, dt);
+        }
+
+        // dogs follow player on sides (a bordo pista)
+        for(const d of dogs){
+          // seguono con un piccolo ritardo "elastico"
+          d.z = THREE.MathUtils.lerp(d.z, player.z + 1.5, 0.05);
+          d.obj.position.z = d.z;
+          d.obj.position.x = d.sideX;
+          animateDog(d, player.v);
+        }
+
+        // finish detection
+        for(const r of runners){
+          if(!r.finished && r.z <= FINISH_Z){
+            r.finished = true;
+            r.time = t;
+          }
+        }
+
+        // end race when all finished
+        if(runners.every(r=>r.finished)){
+          finished = true;
+          racing = false;
+          showResults();
+        }
+      }
+
+      updateCamera();
+      renderer.render(scene, camera);
+    }
+
+    function showResults(){
+      // Order by time
+      const results = runners
+        .map(r=>({name:r.name, time:r.time ?? 9999}))
+        .sort((a,b)=>a.time-b.time);
+
+      // update best if player improved
+      const playerTime = results.find(x=>x.name==="Pierluigi")?.time ?? null;
+      if(playerTime!=null){
+        const old = parseFloat(localStorage.getItem(BEST_KEY) || "9999");
+        if(playerTime < old){
+          localStorage.setItem(BEST_KEY, String(playerTime));
+          elBest.textContent = fmt(playerTime) + " s";
+        } else if(isFinite(old) && old<9999){
+          elBest.textContent = fmt(old) + " s";
+        }
+      }
+
+      // build table
+      board.innerHTML = "";
+      results.forEach((r,i)=>{
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${i+1}</td><td><b>${r.name}</b></td><td>${fmt(r.time)} s</td>`;
+        board.appendChild(tr);
+      });
+
+      const pos = results.findIndex(x=>x.name==="Pierluigi")+1;
+      finalText.textContent = `Hai chiuso in posizione ${pos} con tempo ${fmt(playerTime)} s. (R per riprovare)`;
+      overlay.style.display = "grid";
+    }
+
+    addEventListener("resize", ()=>{
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    tick();
+  </script>
+</body>
+</html>
